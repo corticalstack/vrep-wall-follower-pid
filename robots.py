@@ -70,12 +70,18 @@ class PioneerP3dx(Robot):
                                             0.25 / 180.0 * math.pi, 0.25 / 180.0 * math.pi, 0.5 / 180.0 * math.pi,
                                             0.55 / 180.0 * math.pi, 0.75 / 180.0 * math.pi]}
 
+        self.ClampI = 0.1
+
         # Pioneer specific internal and external state
         self.state = {'int': {'motors': [],
                               'motor_l_v': 0.0,
                               'motor_r_v': 0.0,
                               'motor_all_v': [],
+                              'pid': [0.2, 0.0003, 0.2],  # p is 0, i = 1, d = 2
+                              'pid_prev_error': 0.0,
+                              'pid_sum_error': 0.0,
                               'jpos': {},
+                              'prox_history': [],
                               'prox_s_arr': [],
                               'prox_s': None,
                               'prox_is_less_min_dist_f': False,
@@ -267,9 +273,9 @@ class PioneerP3dx(Robot):
         if 'max_dist' in world_props:
             max_dist = world_props['max_dist']
 
-        coeff = 1
-        if 'coeff' in args:
-            coeff = args['coeff']
+        gain = 1
+        if 'gain' in args:
+            coeff = args['gain']
 
         if step_status['complete'] is None:
             self.set_state_pos_start()  # Set absolute position on start of wall follow task
@@ -292,7 +298,7 @@ class PioneerP3dx(Robot):
             motor_index = 0
 
         # Use wall follow algorithm specified in scenario
-        getattr(self, 'wall_follow_' + args['method'])(min_dist, max_dist, coeff, motor_index)
+        getattr(self, 'wall_follow_' + args['method'])(min_dist, max_dist, gain, motor_index)
 
         # Set motor velocity from updated state
         self.set_motor_v()
@@ -322,7 +328,7 @@ class PioneerP3dx(Robot):
             self.state['int']['motor_l_v'] = baseline_v + diff_map[motor_index][1]
             self.state['int']['motor_r_v'] = baseline_v + diff_map[motor_index][0]
 
-    def wall_follow_multi(self, min_dist, max_dist, coeff, motor_index):
+    def wall_follow_multi(self, min_dist, max_dist, gain, motor_index):
         """
         This wall follow algorithm uses an approach where each sensor is weighted differently, thereby it's value input
         influencing it's contrubution to motor velocity differently
@@ -340,7 +346,7 @@ class PioneerP3dx(Robot):
 
         self.state['int']['err_corr_count'] += diff
 
-        baseline_v = weighted_sensors_f * coeff
+        baseline_v = weighted_sensors_f * gain
         diff_map = [[math.sqrt(diff), math.sqrt(diff) * -1], [math.sqrt(diff) * -1, math.sqrt(diff)]]
 
         if distance < min_dist:
@@ -349,6 +355,68 @@ class PioneerP3dx(Robot):
         else:
             self.state['int']['motor_l_v'] = baseline_v + diff_map[motor_index][1]
             self.state['int']['motor_r_v'] = baseline_v + diff_map[motor_index][0]
+
+    def wall_follow_pid(self, min_dist, max_dist, gain, motor_index):
+        """
+        This wall follow algorithm uses a PID controller approach
+        """
+        #sensors = [s if s <= 1 else 1 for s in self.state['int']['prox_s'].last_read[0:8]]
+        #weighted_sensors_f = sum([s * w for s, w in zip(sensors, self.props['sensor_us_weights'][0:8])])
+
+        distance = self.prox_dist_dir_travel()
+        ltrim = 0
+        rtrim = 0
+
+
+
+
+        if distance < min_dist:
+            error = min_dist - distance
+            ltrim = error * 2
+            rtrim = -error
+        else:
+            error = distance - min_dist
+            rtrim = error * 2
+            ltrim = -error
+
+        print('Error ', error)
+
+        self.state['int']['err_corr_count'] += abs(error)
+        self.state['int']['pid_sum_error'] += error
+
+        P = self.state['int']['pid'][0] * error
+        I = self.clamp_i(self.state['int']['pid_sum_error'])
+        D = self.state['int']['pid'][2] * (error - self.state['int']['pid_prev_error'])
+
+        if distance < min_dist:
+            ltrim = P * 15
+            rtrim = -P * 15
+        else:
+            rtrim = P * 15
+            ltrim = -P * 15
+
+        output = P + I + D
+
+        print('P ', P)
+        print('I ', I)
+        print('D ', D)
+        print('Output ', output)
+
+        baseline_v = 0.3
+        self.state['int']['motor_l_v'] = baseline_v + output + ltrim
+        self.state['int']['motor_r_v'] = baseline_v + output + rtrim
+
+        self.state['int']['pid_prev_error'] = error
+        print('Motor left ',  self.state['int']['motor_l_v'])
+        print('Motor right ',  self.state['int']['motor_r_v'])
+
+    def clamp_i(self, i):
+        if i > self.ClampI:
+            return self.ClampI
+        elif i < -self.ClampI:
+            return -self.ClampI
+        else:
+            return i
 
     def set_joint_pos(self):
         """
