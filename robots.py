@@ -70,14 +70,14 @@ class PioneerP3dx(Robot):
                                             0.25 / 180.0 * math.pi, 0.25 / 180.0 * math.pi, 0.5 / 180.0 * math.pi,
                                             0.55 / 180.0 * math.pi, 0.75 / 180.0 * math.pi]}
 
-        self.ClampI = 0.1
+        self.ClampI = 0.05
 
         # Pioneer specific internal and external state
         self.state = {'int': {'motors': [],
                               'motor_l_v': 0.0,
                               'motor_r_v': 0.0,
                               'motor_all_v': [],
-                              'pid': [0.2, 0.0003, 0.2],  # p is 0, i = 1, d = 2
+                              'pid': [4, 0.00, 0.0],  # p is 0, i = 1, d = 2
                               'pid_prev_error': 0.0,
                               'pid_sum_error': 0.0,
                               'jpos': {},
@@ -360,40 +360,40 @@ class PioneerP3dx(Robot):
         """
         This wall follow algorithm uses a PID controller approach
         """
-        #sensors = [s if s <= 1 else 1 for s in self.state['int']['prox_s'].last_read[0:8]]
-        #weighted_sensors_f = sum([s * w for s, w in zip(sensors, self.props['sensor_us_weights'][0:8])])
+        sensors = [s if s <= 1 else 1 for s in self.state['int']['prox_s'].last_read[0:8]]
+        weighted_sensors_f = sum([s * w for s, w in zip(sensors, self.props['sensor_us_weights'][0:8])])
 
         distance = self.prox_dist_dir_travel()
         ltrim = 0
         rtrim = 0
 
+        sensors = [s if s <= 1 else 1 for s in self.state['int']['prox_s'].last_read[0:5]]
 
-
+        error = min_dist - distance
 
         if distance < min_dist:
-            error = min_dist - distance
             ltrim = error * 2
             rtrim = -error
         else:
-            error = distance - min_dist
             rtrim = error * 2
             ltrim = -error
 
+        print('')
         print('Error ', error)
 
         self.state['int']['err_corr_count'] += abs(error)
         self.state['int']['pid_sum_error'] += error
 
         P = self.state['int']['pid'][0] * error
-        I = self.clamp_i(self.state['int']['pid_sum_error'])
+        I = self.state['int']['pid'][1] * self.clamp_i(self.state['int']['pid_sum_error'])
         D = self.state['int']['pid'][2] * (error - self.state['int']['pid_prev_error'])
 
         if distance < min_dist:
-            ltrim = P * 15
-            rtrim = -P * 15
+            ltrim = P + D + I
+            rtrim = (P + D + I) * -1.2
         else:
-            rtrim = P * 15
-            ltrim = -P * 15
+            rtrim = P + D + I
+            ltrim = (P + D + I) * -1.2
 
         output = P + I + D
 
@@ -402,9 +402,13 @@ class PioneerP3dx(Robot):
         print('D ', D)
         print('Output ', output)
 
-        baseline_v = 0.3
-        self.state['int']['motor_l_v'] = baseline_v + output + ltrim
-        self.state['int']['motor_r_v'] = baseline_v + output + rtrim
+        baseline_v = 0.45
+        if error < 0:
+            self.state['int']['motor_l_v'] = baseline_v + math.sqrt(abs(output))
+            self.state['int']['motor_r_v'] = baseline_v - math.sqrt(abs(output))
+        else:
+            self.state['int']['motor_l_v'] = baseline_v - math.sqrt(abs(output))
+            self.state['int']['motor_r_v'] = baseline_v + math.sqrt(abs(output))
 
         self.state['int']['pid_prev_error'] = error
         print('Motor left ',  self.state['int']['motor_l_v'])
