@@ -77,9 +77,9 @@ class PioneerP3dx(Robot):
                               'motor_l_v': 0.0,
                               'motor_r_v': 0.0,
                               'motor_all_v': [],
-                              'pid': [4, 0.00, 0.0],  # p is 0, i = 1, d = 2
+                              'pid': {'kp': 7.29, 'ki': 1.0, 'kd': 0.0},
                               'pid_prev_error': 0.0,
-                              'pid_sum_error': 0.0,
+                              'pid_sum_error': [],
                               'jpos': {},
                               'prox_history': [],
                               'prox_s_arr': [],
@@ -89,7 +89,9 @@ class PioneerP3dx(Robot):
                               'prox_min_dist_f': 0,
                               'prox_min_dist_r': 0,
                               'compass': None,
-                              'err_corr_count': 0},
+                              'err_corr_count': 0,
+                              'cycle_i': 0,
+                              'error_history': []},
                       'ext': {'abs_pos_s': None,
                               'abs_pos_n': None,
                               'abs_pos_all': []}}
@@ -155,6 +157,8 @@ class PioneerP3dx(Robot):
         """
         Set motor velocity for each motor joint after updating state with conversion m/s to rad/s
         """
+        self.state['int']['cycle_i'] += 1
+
         if self.state['int']['motor_l_v'] > self.props['max_speed_ms']:  # Cap velocity to top speed per data sheet
             self.state['int']['motor_l_v'] = self.props['max_speed_ms']
             lg.message(logging.WARNING, 'Max speed left motor limited to ' + str(self.props['max_speed_ms']))
@@ -169,8 +173,8 @@ class PioneerP3dx(Robot):
         self.state['int']['motor_l_v'] = self.h.ms_to_radss(self.state['int']['motor_l_v'], self.props['wheel_rad_m'])
         self.state['int']['motor_r_v'] = self.h.ms_to_radss(self.state['int']['motor_r_v'], self.props['wheel_rad_m'])
 
-        t = time.time()
-        self.state['int']['motor_all_v'].append((t, self.state['int']['motor_l_v'], self.state['int']['motor_r_v']))
+        self.state['int']['motor_all_v'].append((self.state['int']['cycle_i'], self.state['int']['motor_l_v'],
+                                                 self.state['int']['motor_r_v']))
 
         for m in self.state['int']['motors']:
             if 'left' in self.state['int']['motors'][m]:
@@ -360,59 +364,50 @@ class PioneerP3dx(Robot):
         """
         This wall follow algorithm uses a PID controller approach
         """
-        sensors = [s if s <= 1 else 1 for s in self.state['int']['prox_s'].last_read[0:8]]
-        weighted_sensors_f = sum([s * w for s, w in zip(sensors, self.props['sensor_us_weights'][0:8])])
-
         distance = self.prox_dist_dir_travel()
-        ltrim = 0
-        rtrim = 0
-
-        sensors = [s if s <= 1 else 1 for s in self.state['int']['prox_s'].last_read[0:5]]
-
         error = min_dist - distance
-
-        if distance < min_dist:
-            ltrim = error * 2
-            rtrim = -error
-        else:
-            rtrim = error * 2
-            ltrim = -error
 
         print('')
         print('Error ', error)
 
         self.state['int']['err_corr_count'] += abs(error)
-        self.state['int']['pid_sum_error'] += error
+        self.state['int']['pid_sum_error'].insert(0, error)  # Add error to top of list
+        if len(self.state['int']['pid_sum_error']) > 50:
+            self.state['int']['pid_sum_error'].pop() # remove the last item
+        print('Integral sum ', sum(self.state['int']['pid_sum_error']))
 
-        P = self.state['int']['pid'][0] * error
-        I = self.state['int']['pid'][1] * self.clamp_i(self.state['int']['pid_sum_error'])
-        D = self.state['int']['pid'][2] * (error - self.state['int']['pid_prev_error'])
+        p = self.state['int']['pid']['kp'] * error
+        i = self.state['int']['pid']['ki'] * self.clamp_i(sum(self.state['int']['pid_sum_error']))
+        d = 0
 
-        if distance < min_dist:
-            ltrim = P + D + I
-            rtrim = (P + D + I) * -1.2
+        #d = self.state['int']['pid']['kd'] * (error - self.state['int']['pid_prev_error'])
+
+        output = (p - i) + d
+        self.state['int']['error_history'].append((self.state['int']['cycle_i'], output))
+       #print('Cycle ', self.state['int']['cycle_i'])
+
+        baseline_v = 0.39
+        if error < 0:
+            self.state['int']['motor_l_v'] = baseline_v + abs(output)
+            self.state['int']['motor_r_v'] = baseline_v - abs(output)
+            #self.state['int']['motor_l_v'] = baseline_v + math.sqrt(abs(output))
+            #self.state['int']['motor_r_v'] = baseline_v - math.sqrt(abs(output))
+
         else:
-            rtrim = P + D + I
-            ltrim = (P + D + I) * -1.2
+            self.state['int']['motor_l_v'] = baseline_v - abs(output)
+            self.state['int']['motor_r_v'] = baseline_v + abs(output)
+            #self.state['int']['motor_l_v'] = baseline_v - math.sqrt(abs(output))
+            #self.state['int']['motor_r_v'] = baseline_v + math.sqrt(abs(output))
 
-        output = P + I + D
-
-        print('P ', P)
-        print('I ', I)
-        print('D ', D)
+        print('P ', p)
+        print('I ', i)
+        print('D ', d)
         print('Output ', output)
 
-        baseline_v = 0.45
-        if error < 0:
-            self.state['int']['motor_l_v'] = baseline_v + math.sqrt(abs(output))
-            self.state['int']['motor_r_v'] = baseline_v - math.sqrt(abs(output))
-        else:
-            self.state['int']['motor_l_v'] = baseline_v - math.sqrt(abs(output))
-            self.state['int']['motor_r_v'] = baseline_v + math.sqrt(abs(output))
-
         self.state['int']['pid_prev_error'] = error
-        print('Motor left ',  self.state['int']['motor_l_v'])
-        print('Motor right ',  self.state['int']['motor_r_v'])
+        #print('Motor left ',  self.state['int']['motor_l_v'])
+        #print('Motor right ',  self.state['int']['motor_r_v'])
+
 
     def clamp_i(self, i):
         if i > self.ClampI:

@@ -112,3 +112,6 @@ class Controller:
             csv_output = csv.writer(out)
             csv_output.writerows(self.robot.state['int']['motor_all_v'])
 
+        with open('output/error_history', 'w', newline='') as out:
+            csv_output = csv.writer(out)
+            csv_output.writerows(self.robot.state['int']['error_history'])

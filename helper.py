@@ -154,7 +154,7 @@ class Helper:
         return metres_per_s / radius
         #return (metres_per_s * 2) / (radius * 2)
 
-    def within_dist(self, point_a, point_b, dist_threshold=0.07):
+    def within_dist(self, point_a, point_b, dist_threshold=0.08):
         """
         Determine if point A within distance threshold of point B
         """
