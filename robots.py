@@ -70,16 +70,16 @@ class PioneerP3dx(Robot):
                                             0.25 / 180.0 * math.pi, 0.25 / 180.0 * math.pi, 0.5 / 180.0 * math.pi,
                                             0.55 / 180.0 * math.pi, 0.75 / 180.0 * math.pi]}
 
-        self.ClampI = 0.05
-
         # Pioneer specific internal and external state
         self.state = {'int': {'motors': [],
                               'motor_l_v': 0.0,
                               'motor_r_v': 0.0,
                               'motor_all_v': [],
-                              'pid': {'kp': 7.29, 'ki': 1.0, 'kd': 0.0},
+                              'pid': {'kp': 7.29, 'ki': 0.0, 'kd': 0.0},
+                              'pid_integral_clamp': 0.09,
                               'pid_prev_error': 0.0,
-                              'pid_sum_error': [],
+                              'pid_sum_error_short_term': [],
+                              'pid_sum_error': 0,
                               'jpos': {},
                               'prox_history': [],
                               'prox_s_arr': [],
@@ -285,11 +285,15 @@ class PioneerP3dx(Robot):
             self.set_state_pos_start()  # Set absolute position on start of wall follow task
             step_status['complete'] = False
 
-        # After 5 seconds track euclidean distance between start point and current, to check if task completed (1 loop)
+        #After 5 seconds track euclidean distance between start point and current, to check if task completed (1 loop)
         if self.h.within_dist(self.state['ext']['abs_pos_s'], self.state['ext']['abs_pos_n']) and time.time() - \
                 step_status['start_t'] > 10:
             step_status['complete'] = True
             lg.message(logging.INFO, 'Wall Follow event complete')
+
+        # if  time.time() - step_status['start_t'] > 3:
+        #     step_status['complete'] = True
+        #     lg.message(logging.INFO, 'Wall Follow event complete')
 
         # Set motor speed mapping index according to rotation (cw, ccw) and direction of travel (forward, reverse)
         if args['dir'] == 1 and self.robot_dir_travel == 1:
@@ -367,55 +371,44 @@ class PioneerP3dx(Robot):
         distance = self.prox_dist_dir_travel()
         error = min_dist - distance
 
-        print('')
-        print('Error ', error)
-
         self.state['int']['err_corr_count'] += abs(error)
-        self.state['int']['pid_sum_error'].insert(0, error)  # Add error to top of list
-        if len(self.state['int']['pid_sum_error']) > 50:
-            self.state['int']['pid_sum_error'].pop() # remove the last item
-        print('Integral sum ', sum(self.state['int']['pid_sum_error']))
+
+        self.state['int']['pid_sum_error_short_term'].insert(0, error)  # Add error to top of list
+        if len(self.state['int']['pid_sum_error_short_term']) > 100:
+            self.state['int']['pid_sum_error_short_term'].pop()  # Remove last item
+        self.state['int']['pid_sum_error'] += error
 
         p = self.state['int']['pid']['kp'] * error
-        i = self.state['int']['pid']['ki'] * self.clamp_i(sum(self.state['int']['pid_sum_error']))
-        d = 0
 
-        #d = self.state['int']['pid']['kd'] * (error - self.state['int']['pid_prev_error'])
+        #i = 0
+        #i = self.state['int']['pid']['ki'] * self.pid_integral_clamp(self.state['int']['pid_sum_error'])
+        i = self.state['int']['pid']['ki'] * self.pid_integral_clamp(sum(self.state['int']['pid_sum_error_short_term']))
 
-        output = (p - i) + d
-        self.state['int']['error_history'].append((self.state['int']['cycle_i'], output))
-       #print('Cycle ', self.state['int']['cycle_i'])
+        #d = 0
+        d = self.state['int']['pid']['kd'] * (error - self.state['int']['pid_prev_error'])
 
-        baseline_v = 0.39
+        output = (p + i) + d
+        self.state['int']['error_history'].append((self.state['int']['cycle_i'], output))  # Supports telemetry
+
+        #baseline_v = 0.39
+        baseline_v = 0.47 - math.sqrt(abs(p))
+
         if error < 0:
             self.state['int']['motor_l_v'] = baseline_v + abs(output)
             self.state['int']['motor_r_v'] = baseline_v - abs(output)
-            #self.state['int']['motor_l_v'] = baseline_v + math.sqrt(abs(output))
-            #self.state['int']['motor_r_v'] = baseline_v - math.sqrt(abs(output))
-
         else:
             self.state['int']['motor_l_v'] = baseline_v - abs(output)
             self.state['int']['motor_r_v'] = baseline_v + abs(output)
-            #self.state['int']['motor_l_v'] = baseline_v - math.sqrt(abs(output))
-            #self.state['int']['motor_r_v'] = baseline_v + math.sqrt(abs(output))
-
-        print('P ', p)
-        print('I ', i)
-        print('D ', d)
-        print('Output ', output)
 
         self.state['int']['pid_prev_error'] = error
-        #print('Motor left ',  self.state['int']['motor_l_v'])
-        #print('Motor right ',  self.state['int']['motor_r_v'])
 
-
-    def clamp_i(self, i):
-        if i > self.ClampI:
-            return self.ClampI
-        elif i < -self.ClampI:
-            return -self.ClampI
+    def pid_integral_clamp(self, integral):
+        if integral > self.state['int']['pid_integral_clamp']:
+            return self.state['int']['pid_integral_clamp']
+        elif integral < -self.state['int']['pid_integral_clamp']:
+            return -self.state['int']['pid_integral_clamp']
         else:
-            return i
+            return integral
 
     def set_joint_pos(self):
         """
