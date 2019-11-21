@@ -75,7 +75,7 @@ class PioneerP3dx(Robot):
                               'motor_l_v': 0.0,
                               'motor_r_v': 0.0,
                               'motor_all_v': [],
-                              'pid': {'kp': 7.29, 'ki': 0.0, 'kd': 0.0},
+                              'pid': {'kp': 7.29, 'ki': 0.0, 'kd': -7.0},
                               'pid_integral_clamp': 0.09,
                               'pid_prev_error': 0.0,
                               'pid_sum_error_short_term': [],
@@ -291,7 +291,7 @@ class PioneerP3dx(Robot):
             step_status['complete'] = True
             lg.message(logging.INFO, 'Wall Follow event complete')
 
-        # if  time.time() - step_status['start_t'] > 3:
+        # if  time.time() - step_status['start_t'] > 4:
         #     step_status['complete'] = True
         #     lg.message(logging.INFO, 'Wall Follow event complete')
 
@@ -368,15 +368,22 @@ class PioneerP3dx(Robot):
         """
         This wall follow algorithm uses a PID controller approach
         """
+        # Get PV
         distance = self.prox_dist_dir_travel()
+
+        # e(t) is SP - PV
         error = min_dist - distance
 
+        # Accumulate navigation error
         self.state['int']['err_corr_count'] += abs(error)
 
+        # Integral short-term memory
         self.state['int']['pid_sum_error_short_term'].insert(0, error)  # Add error to top of list
         if len(self.state['int']['pid_sum_error_short_term']) > 100:
             self.state['int']['pid_sum_error_short_term'].pop()  # Remove last item
-        self.state['int']['pid_sum_error'] += error
+
+        # Traditional integral implementation
+        #self.state['int']['pid_sum_error'] += error
 
         p = self.state['int']['pid']['kp'] * error
 
@@ -387,11 +394,11 @@ class PioneerP3dx(Robot):
         #d = 0
         d = self.state['int']['pid']['kd'] * (error - self.state['int']['pid_prev_error'])
 
-        output = (p + i) + d
+        output = p + i + d
         self.state['int']['error_history'].append((self.state['int']['cycle_i'], output))  # Supports telemetry
 
-        #baseline_v = 0.39
-        baseline_v = 0.47 - math.sqrt(abs(p))
+        #baseline_v = 0.39  # Fixed baseline speed
+        baseline_v = 0.47 - math.sqrt(abs(p))  # Dynamic baseline speed with P control gain
 
         if error < 0:
             self.state['int']['motor_l_v'] = baseline_v + abs(output)
@@ -400,7 +407,7 @@ class PioneerP3dx(Robot):
             self.state['int']['motor_l_v'] = baseline_v - abs(output)
             self.state['int']['motor_r_v'] = baseline_v + abs(output)
 
-        self.state['int']['pid_prev_error'] = error
+        self.state['int']['pid_prev_error'] = error  # Log error supporting derivative
 
     def pid_integral_clamp(self, integral):
         if integral > self.state['int']['pid_integral_clamp']:
